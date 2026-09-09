@@ -75,7 +75,7 @@ jobs:
           sudo apt-get install -y libasound2-dev
 
       # Keep in sync with rust-version in Cargo.toml (clap 4.6 sets the floor).
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
