@@ -1,0 +1,58 @@
+name: Bug report
+description: Something behaves differently than documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file this. Measurement bugs are easiest to
+        fix when we can see the numbers, so please attach the JSON if you have one.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect, and what did you get instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: The exact command you ran.
+      render: shell
+      placeholder: zvuk --input 2 --output "Head unit" --module left-right-balance
+    validations:
+      required: true
+
+  - type: textarea
+    id: devices
+    attributes:
+      label: Output of `zvuk devices`
+      description: This tells us the host, sample rates and sample formats involved.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Windows 11 24H2 / macOS 15.2"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `zvuk --version`, or the commit you built from.
+    validations:
+      required: true
+
+  - type: textarea
+    id: measurement
+    attributes:
+      label: Measurement JSON (optional)
+      description: Drag the file from your `measurements/` directory in here.
