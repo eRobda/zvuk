@@ -60,8 +60,10 @@ minimum supported Rust version from `rust-version` in `Cargo.toml`.
 2. Implement `signal()` if the module needs the user to play something. Return
    a `TestSignal` with the samples, a layout description and the instructions
    that get written next to the WAV.
-3. Add a result struct and give it a variant in `MeasurementResult`
-   (`src/measurement.rs`) so it serialises to JSON.
+3. Add a result struct and give it a `Box`ed variant in `MeasurementResult`
+   (`src/measurement.rs`) so it serialises to JSON. Every variant is boxed:
+   an enum is as big as its largest arm, and these structs carry whole
+   response curves.
 4. Add `pub mod your_module;` to `src/modules/mod.rs`.
 5. Add one line to `registry::all()` in `src/registry.rs`.
 

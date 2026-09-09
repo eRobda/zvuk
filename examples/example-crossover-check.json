@@ -120,7 +120,9 @@
       "corner_low_hz": 89.9,
       "corner_high_hz": 4163.1,
       "deep_low_hz": 64.6,
-      "deep_high_hz": 5829.6
+      "deep_high_hz": 5829.6,
+      "low_slope_db_per_octave": 11.8,
+      "high_slope_db_per_octave": 11.4
     },
     "set_b": {
       "name": "sub",
@@ -197,7 +199,9 @@
       "corner_low_hz": null,
       "corner_high_hz": 133.8,
       "deep_low_hz": null,
-      "deep_high_hz": 173.3
+      "deep_high_hz": 173.3,
+      "low_slope_db_per_octave": null,
+      "high_slope_db_per_octave": 12.6
     },
     "set_a_repeat": {
       "name": "doors-recheck",
@@ -274,7 +278,9 @@
       "corner_low_hz": 89.9,
       "corner_high_hz": 4163.1,
       "deep_low_hz": 64.6,
-      "deep_high_hz": 5829.6
+      "deep_high_hz": 5829.6,
+      "low_slope_db_per_octave": 11.8,
+      "high_slope_db_per_octave": 11.4
     },
     "crossover_hz": 96.7,
     "crossover_a_rel_db": -6.1,
@@ -315,7 +321,15 @@
     "level_offset_db": 3.06,
     "repeatability_db": 0.06,
     "sanity_check_passed": true,
-    "recommendation": "'doors' and 'sub' cross at 97 Hz. There each sits about -6 dB below its own passband (about -6 dB each is the usual target). Summed, the response stays within 1.0 dB through the crossover. Gain staging: 'sub' runs 3.0 dB hotter than 'doors'. Trim the gain rather than the volume, so the difference stays fixed as you turn it up. The sum above is magnitude only. If it already shows a hole, phase cannot rescue it; if it looks flat, phase can still ruin it.",
-    "warnings": []
+    "recommendation": "The low-pass on 'sub' measures 134 Hz and the high-pass on 'doors' measures 90 Hz, so 'sub' keeps playing 0.57 octave past where 'doors' takes over. Bring the 'sub' low-pass down towards the 'doors' high-pass, or the high-pass up - the usual target is both corners on the same frequency. 'doors' and 'sub' cross at 97 Hz. There each sits -6.1 dB and -5.8 dB below its own passband (about -6 dB each is the usual target). Summed, the response stays within 0.9 dB through the crossover. Gain staging: 'sub' runs 3.1 dB hotter than 'doors'. Trim the gain rather than the volume, so the difference stays fixed as you turn it up. Corners and slopes are what the system actually does, drivers and cabin included, not what the dial reads - move the dial until the measurement says what you want. The sum above is magnitude only. If it already shows a hole, phase cannot rescue it; if it looks flat, phase can still ruin it.",
+    "warnings": [
+      "the two filters overlap by 0.57 octave"
+    ],
+    "low_group": "sub",
+    "low_pass_corner_hz": 133.8,
+    "high_pass_corner_hz": 89.9,
+    "low_pass_slope_db_per_octave": 12.6,
+    "high_pass_slope_db_per_octave": 11.8,
+    "overlap_octaves": 0.574
   }
 }

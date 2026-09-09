@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bandwidth, the frequency where they hand over, whether the summed response
   leaves a hole there, and how their levels compare. The third pass exists
   because the level comparison is worthless if the volume knob moved.
+- The two crossover filters are reported separately, with their slopes: a
+  low-pass on the group covering the bottom and a high-pass on the group
+  covering the top are set on different knobs and can disagree, so the module
+  says whether they overlap, leave a gap or line up, and which one to move.
+- `MeasurementResult` variants are boxed. An enum is as big as its largest arm
+  and these structs carry whole response curves.
 - Third-octave analysis from 20 Hz to 16 kHz via `fractional_octave_bands` and
   a longer transform, since whole octaves put their nearest centre at 125 Hz
   and a sub crosses around 80 Hz.

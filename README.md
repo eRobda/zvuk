@@ -305,6 +305,13 @@ Adding one is meant to be cheap: one new file, one variant in
 of door speakers are supposed to work together: **from where to where does each
 of them work, where do they hand over, and is one of them running hot?**
 
+There is no single "crossover" to measure. There are **two independent
+filters** — a low-pass on the sub and a high-pass on the fronts — set on
+separate knobs, and perfectly capable of disagreeing. The frequency where the
+two curves happen to meet is a *consequence* of both settings plus the drivers
+and the cabin; it is not something you can turn. So the module reports the two
+corners separately, as the two things you can actually change.
+
 You play the same track three times, changing only which speakers are allowed
 to make sound:
 
@@ -341,21 +348,35 @@ doors: peaks at 1600 Hz (-30.0 dBFS)
 sub: peaks at 63 Hz (-33.0 dBFS)
   -6 dB from (off the measured range) to 134 Hz
   -10 dB from (off the measured range) to 173 Hz
+
+Measured filter corners (what the system does, not what the dial says):
+  sub          low-pass      134 Hz, 13 dB/octave above it
+  doors        high-pass      90 Hz, 12 dB/octave below it
+  'sub' keeps playing 0.57 octave past where 'doors' starts: they overlap.
 ```
 
 *(Bundled as `examples/example-crossover-check.json`, with synthetic numbers.
 `cargo run -- show examples/example-crossover-check.json` prints the whole
 thing, recommendation included.)*
 
-Three things to read out of it:
+Four things to read out of it:
 
 - **Bandwidth.** Where each group is 6 dB down from its own passband. That is
   the honest answer to "from what Hz to what Hz does the midbass work".
-- **The crossover.** Where the two curves meet, and how far each has fallen by
-  then. Both around -6 dB is the usual target; much less overlap leaves a hole,
-  much more leaves a bump.
+- **The two filter corners, and their slopes.** The low-pass on the sub and the
+  high-pass on the fronts, measured separately, plus how steeply each falls
+  away. The report says whether they overlap, leave a gap, or line up — and
+  which knob to move in which direction. Mismatched slopes get called out too,
+  because they leave a tilt through the handover however you place the corners.
+- **The crossover.** Where the two curves actually meet, and how far each has
+  fallen by then. Both around -6 dB is the usual target.
 - **Gain staging.** The difference between the two passband levels, which is
   what you trim at the amplifier rather than at the volume knob.
+
+These corners are **acoustic**, not dial positions. They include the driver's
+own roll-off and the cabin, so a door speaker that gives up at 90 Hz will read
+90 Hz whatever the high-pass is set to. That is the number that matters, but it
+does mean the dial may have to sit somewhere else to get it.
 
 **One honest limit:** the summed curve is a *magnitude* sum. If it already
 shows a hole, no amount of phase alignment will fix it. If it looks flat, phase

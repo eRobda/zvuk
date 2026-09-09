@@ -47,6 +47,16 @@ const DIP_WARN_DB: f32 = 3.0;
 const GAIN_NOTE_DB: f32 = 3.0;
 /// Bands with fewer bins than this are too coarsely resolved to trust.
 const MIN_BINS: usize = 3;
+/// A slope is fitted starting this far past the corner, where the filter has
+/// settled into its asymptote instead of still rounding over.
+const SLOPE_START_OCTAVES: f32 = 0.5;
+/// How far the slope fit extends beyond that.
+const SLOPE_SPAN_OCTAVES: f32 = 2.0;
+/// How far below the passband a band may fall and still be fitted. Beyond this
+/// the curve is measuring the room, not the filter.
+const SLOPE_FLOOR_DB: f32 = 30.0;
+/// Corner frequencies closer together than this count as aligned.
+const ALIGN_TOLERANCE_OCTAVES: f32 = 0.25;
 /// Fixed generator seed, so every generated track is identical.
 const NOISE_SEED: u64 = 0x0CE7_A5E1_9B3D_4F62;
 
@@ -75,6 +85,12 @@ pub struct SetMeasurement {
     /// The same at `DEEP_DROP_DB`.
     pub deep_low_hz: Option<f32>,
     pub deep_high_hz: Option<f32>,
+    /// How steeply the response falls away below `corner_low_hz`, in dB per
+    /// octave. For the group covering the top end this is its high-pass filter.
+    pub low_slope_db_per_octave: Option<f32>,
+    /// The same above `corner_high_hz`: the low-pass filter of the group
+    /// covering the bottom end.
+    pub high_slope_db_per_octave: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +114,18 @@ pub struct CrossoverCheckResult {
     pub combined_dip_db: Option<f32>,
     /// Passband level of A minus passband level of B: the gain staging.
     pub level_offset_db: f32,
+    /// Which group covers the bottom end, decided by where each one peaks.
+    pub low_group: String,
+    /// The two filters you can actually turn: the low group's measured
+    /// low-pass corner and the high group's measured high-pass corner.
+    pub low_pass_corner_hz: Option<f32>,
+    pub high_pass_corner_hz: Option<f32>,
+    pub low_pass_slope_db_per_octave: Option<f32>,
+    pub high_pass_slope_db_per_octave: Option<f32>,
+    /// Distance between those two corners in octaves. Positive means the low
+    /// group keeps playing past where the high group starts - they overlap.
+    /// Negative means neither covers the gap between them.
+    pub overlap_octaves: Option<f32>,
     pub repeatability_db: Option<f32>,
     pub sanity_check_passed: Option<bool>,
     pub recommendation: String,
@@ -221,12 +249,41 @@ impl Measurement for CrossoverCheck {
         let combined_dip_db = crossover_hz.and_then(|hz| dip_around(&centers, &combined_dbfs, hz));
         let level_offset_db = set_a.passband_ref_dbfs - set_b.passband_ref_dbfs;
 
+        // The two filters the user can actually turn are not the same thing as
+        // the frequency where the curves happen to meet: a low-pass on the low
+        // group and a high-pass on the high one, set independently and quite
+        // capable of disagreeing.
+        let (low, high) = if set_a.passband_peak_hz <= set_b.passband_peak_hz {
+            (&set_a, &set_b)
+        } else {
+            (&set_b, &set_a)
+        };
+        let low_group = low.name.clone();
+        let high_group = high.name.clone();
+        let low_pass_corner_hz = low.corner_high_hz;
+        let high_pass_corner_hz = high.corner_low_hz;
+        let low_pass_slope_db_per_octave = low.high_slope_db_per_octave;
+        let high_pass_slope_db_per_octave = high.low_slope_db_per_octave;
+        let overlap_octaves = match (low_pass_corner_hz, high_pass_corner_hz) {
+            (Some(lp), Some(hp)) if hp > 0.0 => Some((lp / hp).log2()),
+            _ => None,
+        };
+
         let repeatability_db = Some((set_a.broadband_dbfs - set_a_repeat.broadband_dbfs).abs());
         let sanity_check_passed = repeatability_db.map(|d| d <= SANITY_LIMIT_DB);
 
         print_table(&centers, &set_a, &set_b, &combined_dbfs, crossover_hz);
         print_bandwidth(&set_a);
         print_bandwidth(&set_b);
+        print_filters(
+            &low_group,
+            &high_group,
+            low_pass_corner_hz,
+            high_pass_corner_hz,
+            low_pass_slope_db_per_octave,
+            high_pass_slope_db_per_octave,
+            overlap_octaves,
+        );
 
         if let (Some(diff), Some(passed)) = (repeatability_db, sanity_check_passed) {
             println!();
@@ -248,29 +305,15 @@ impl Measurement for CrossoverCheck {
             }
         }
 
-        let recommendation = build_recommendation(
-            &set_a,
-            &set_b,
-            crossover_hz,
-            crossover_a_rel_db,
-            crossover_b_rel_db,
-            combined_dip_db,
-            level_offset_db,
-            sanity_check_passed,
-            &mut warnings,
-        );
-
-        println!();
-        println!("Recommendation: {recommendation}");
-        if !warnings.is_empty() {
-            println!();
-            println!("Warnings:");
-            for w in &warnings {
-                println!("  - {w}");
-            }
-        }
-
-        Ok(MeasurementResult::CrossoverCheck(CrossoverCheckResult {
+        let mut result = CrossoverCheckResult {
+            recommendation: String::new(),
+            warnings: Vec::new(),
+            low_group,
+            low_pass_corner_hz,
+            high_pass_corner_hz,
+            low_pass_slope_db_per_octave,
+            high_pass_slope_db_per_octave,
+            overlap_octaves,
             sample_rate: ctx.input.sample_rate(),
             band_centers_hz: centers,
             bands_per_octave: 3,
@@ -285,9 +328,22 @@ impl Measurement for CrossoverCheck {
             level_offset_db,
             repeatability_db,
             sanity_check_passed,
-            recommendation,
-            warnings,
-        }))
+        };
+
+        result.recommendation = build_recommendation(&result, &high_group, &mut warnings);
+
+        println!();
+        println!("Recommendation: {}", result.recommendation);
+        if !warnings.is_empty() {
+            println!();
+            println!("Warnings:");
+            for w in &warnings {
+                println!("  - {w}");
+            }
+        }
+        result.warnings = warnings;
+
+        Ok(MeasurementResult::CrossoverCheck(Box::new(result)))
     }
 }
 
@@ -381,6 +437,23 @@ fn record_pass(
     let peak_index = argmax(&smoothed);
     let passband_ref_dbfs = smoothed[peak_index];
     let centers = &octave::THIRD_OCTAVE_CENTERS_HZ;
+    let floor = passband_ref_dbfs - SLOPE_FLOOR_DB;
+    let corner_low_hz = corner(
+        centers,
+        &smoothed,
+        peak_index,
+        passband_ref_dbfs,
+        CORNER_DROP_DB,
+        true,
+    );
+    let corner_high_hz = corner(
+        centers,
+        &smoothed,
+        peak_index,
+        passband_ref_dbfs,
+        CORNER_DROP_DB,
+        false,
+    );
 
     Ok(SetMeasurement {
         name: name.to_string(),
@@ -390,22 +463,12 @@ fn record_pass(
         peak,
         passband_ref_dbfs,
         passband_peak_hz: centers[peak_index],
-        corner_low_hz: corner(
-            centers,
-            &smoothed,
-            peak_index,
-            passband_ref_dbfs,
-            CORNER_DROP_DB,
-            true,
-        ),
-        corner_high_hz: corner(
-            centers,
-            &smoothed,
-            peak_index,
-            passband_ref_dbfs,
-            CORNER_DROP_DB,
-            false,
-        ),
+        corner_low_hz,
+        corner_high_hz,
+        low_slope_db_per_octave: corner_low_hz
+            .and_then(|hz| slope_outward(centers, &smoothed, hz, true, floor)),
+        high_slope_db_per_octave: corner_high_hz
+            .and_then(|hz| slope_outward(centers, &smoothed, hz, false, floor)),
         deep_low_hz: corner(
             centers,
             &smoothed,
@@ -483,6 +546,49 @@ fn corner(
         }
         i = next;
     }
+}
+
+/// Least-squares slope of level against log2 frequency, in dB per octave,
+/// fitted to the stop band just outside a corner.
+///
+/// The fit starts half an octave past the corner, where a real filter has
+/// settled into its asymptote rather than still rounding over, and it ignores
+/// anything that has already fallen into the noise: past that point the curve
+/// describes the room, not the filter.
+fn slope_outward(
+    centers: &[f32],
+    levels: &[f32],
+    corner_hz: f32,
+    downward: bool,
+    floor_db: f32,
+) -> Option<f32> {
+    let near = 2f32.powf(SLOPE_START_OCTAVES);
+    let far = 2f32.powf(SLOPE_START_OCTAVES + SLOPE_SPAN_OCTAVES);
+    let (lo, hi) = if downward {
+        (corner_hz / far, corner_hz / near)
+    } else {
+        (corner_hz * near, corner_hz * far)
+    };
+
+    let points: Vec<(f32, f32)> = centers
+        .iter()
+        .zip(levels.iter())
+        .filter(|(&c, &l)| c >= lo && c <= hi && l >= floor_db)
+        .map(|(&c, &l)| (c.log2(), l))
+        .collect();
+    if points.len() < 3 {
+        return None;
+    }
+
+    let n = points.len() as f32;
+    let mean_x = points.iter().map(|p| p.0).sum::<f32>() / n;
+    let mean_y = points.iter().map(|p| p.1).sum::<f32>() / n;
+    let covariance: f32 = points.iter().map(|p| (p.0 - mean_x) * (p.1 - mean_y)).sum();
+    let variance: f32 = points.iter().map(|p| (p.0 - mean_x).powi(2)).sum();
+    if variance.abs() < f32::EPSILON {
+        return None;
+    }
+    Some((covariance / variance).abs())
 }
 
 /// Frequency at which a straight line between two bands, drawn on log-frequency
@@ -677,6 +783,54 @@ fn print_bandwidth(set: &SetMeasurement) {
     );
 }
 
+/// The part of the report that maps onto the two knobs the user can turn.
+#[allow(clippy::too_many_arguments)]
+fn print_filters(
+    low_group: &str,
+    high_group: &str,
+    low_pass_hz: Option<f32>,
+    high_pass_hz: Option<f32>,
+    low_pass_slope: Option<f32>,
+    high_pass_slope: Option<f32>,
+    overlap_octaves: Option<f32>,
+) {
+    println!();
+    println!("Measured filter corners (what the system does, not what the dial says):");
+    println!(
+        "  {low_group:<12} low-pass  {:>10}{}",
+        format_hz(low_pass_hz),
+        format_slope(low_pass_slope, "above")
+    );
+    println!(
+        "  {high_group:<12} high-pass {:>10}{}",
+        format_hz(high_pass_hz),
+        format_slope(high_pass_slope, "below")
+    );
+
+    match overlap_octaves {
+        Some(octaves) if octaves > ALIGN_TOLERANCE_OCTAVES => println!(
+            "  '{low_group}' keeps playing {octaves:.2} octave past where '{high_group}' \
+             starts: they overlap."
+        ),
+        Some(octaves) if octaves < -ALIGN_TOLERANCE_OCTAVES => println!(
+            "  Neither covers {:.2} octave between them: there is a gap.",
+            -octaves
+        ),
+        Some(octaves) => println!(
+            "  The two corners are {:.2} octave apart, which is aligned.",
+            octaves.abs()
+        ),
+        None => println!("  One of the corners is outside the measured range, so the two"),
+    }
+}
+
+fn format_slope(slope: Option<f32>, side: &str) -> String {
+    match slope {
+        Some(s) => format!(", {s:.0} dB/octave {side} it"),
+        None => String::new(),
+    }
+}
+
 fn format_hz(hz: Option<f32>) -> String {
     match hz {
         Some(f) if f >= 1000.0 => format!("{:.1} kHz", f / 1000.0),
@@ -685,25 +839,84 @@ fn format_hz(hz: Option<f32>) -> String {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_recommendation(
-    a: &SetMeasurement,
-    b: &SetMeasurement,
-    crossover_hz: Option<f32>,
-    a_rel: Option<f32>,
-    b_rel: Option<f32>,
-    dip_db: Option<f32>,
-    level_offset_db: f32,
-    sanity_check_passed: Option<bool>,
+    result: &CrossoverCheckResult,
+    high_group: &str,
     warnings: &mut Vec<String>,
 ) -> String {
-    if sanity_check_passed == Some(false) {
+    if result.sanity_check_passed == Some(false) {
         return "Measure again - the two passes of the same group disagree, so nothing below \
                 can be compared."
             .to_string();
     }
 
+    let a = &result.set_a;
+    let b = &result.set_b;
+    let crossover_hz = result.crossover_hz;
+    let a_rel = result.crossover_a_rel_db;
+    let b_rel = result.crossover_b_rel_db;
+    let dip_db = result.combined_dip_db;
+    let level_offset_db = result.level_offset_db;
+    let low_group = result.low_group.as_str();
+
     let mut parts: Vec<String> = Vec::new();
+
+    // The two filters, and which one to move. This is the actionable part: the
+    // frequency where the curves meet is a consequence of both settings, but
+    // only the two corners map onto knobs.
+    match result.overlap_octaves {
+        Some(octaves) if octaves > ALIGN_TOLERANCE_OCTAVES => {
+            parts.push(format!(
+                "The low-pass on '{low_group}' measures {} and the high-pass on \
+                 '{high_group}' measures {}, so '{low_group}' keeps playing {octaves:.2} \
+                 octave past where '{high_group}' takes over. Bring the '{low_group}' \
+                 low-pass down towards the '{high_group}' high-pass, or the high-pass up - \
+                 the usual target is both corners on the same frequency.",
+                format_hz(result.low_pass_corner_hz),
+                format_hz(result.high_pass_corner_hz),
+            ));
+            warnings.push(format!("the two filters overlap by {octaves:.2} octave"));
+        }
+        Some(octaves) if octaves < -ALIGN_TOLERANCE_OCTAVES => {
+            parts.push(format!(
+                "The low-pass on '{low_group}' measures {} and the high-pass on \
+                 '{high_group}' measures {}, leaving {:.2} octave that neither of them \
+                 covers. Raise the '{low_group}' low-pass or lower the '{high_group}' \
+                 high-pass until the two corners meet.",
+                format_hz(result.low_pass_corner_hz),
+                format_hz(result.high_pass_corner_hz),
+                -octaves
+            ));
+            warnings.push(format!(
+                "the two filters leave a gap of {:.2} octave",
+                -octaves
+            ));
+        }
+        Some(octaves) => parts.push(format!(
+            "The low-pass on '{low_group}' ({}) and the high-pass on '{high_group}' ({}) sit \
+             {:.2} octave apart, which is the alignment you want.",
+            format_hz(result.low_pass_corner_hz),
+            format_hz(result.high_pass_corner_hz),
+            octaves.abs()
+        )),
+        None => {}
+    }
+
+    if let (Some(lp), Some(hp)) = (
+        result.low_pass_slope_db_per_octave,
+        result.high_pass_slope_db_per_octave,
+    ) {
+        if (lp - hp).abs() > 6.0 {
+            parts.push(format!(
+                "The slopes do not match either: {lp:.0} dB/octave against {hp:.0}. Matched \
+                 slopes make the two sum predictably; mismatched ones leave a tilt through \
+                 the handover however you place the corners."
+            ));
+            warnings.push(format!(
+                "filter slopes differ: {lp:.0} against {hp:.0} dB/octave"
+            ));
+        }
+    }
 
     match crossover_hz {
         Some(hz) => {
@@ -777,6 +990,11 @@ fn build_recommendation(
     }
 
     parts.push(
+        "Corners and slopes are what the system actually does, drivers and cabin included, \
+         not what the dial reads - move the dial until the measurement says what you want."
+            .to_string(),
+    );
+    parts.push(
         "The sum above is magnitude only. If it already shows a hole, phase cannot rescue it; \
          if it looks flat, phase can still ruin it."
             .to_string(),
@@ -796,6 +1014,20 @@ pub fn print_result(result: &CrossoverCheckResult) {
     );
     print_bandwidth(&result.set_a);
     print_bandwidth(&result.set_b);
+    let high_group = if result.set_a.name == result.low_group {
+        &result.set_b.name
+    } else {
+        &result.set_a.name
+    };
+    print_filters(
+        &result.low_group,
+        high_group,
+        result.low_pass_corner_hz,
+        result.high_pass_corner_hz,
+        result.low_pass_slope_db_per_octave,
+        result.high_pass_slope_db_per_octave,
+        result.overlap_octaves,
+    );
     println!();
     if let Some(diff) = result.repeatability_db {
         let verdict = match result.sanity_check_passed {
@@ -889,8 +1121,51 @@ mod tests {
             ),
             deep_low_hz: None,
             deep_high_hz: None,
+            low_slope_db_per_octave: corner(
+                &CENTERS,
+                &smoothed,
+                peak_index,
+                smoothed[peak_index],
+                CORNER_DROP_DB,
+                true,
+            )
+            .and_then(|hz| {
+                slope_outward(
+                    &CENTERS,
+                    &smoothed,
+                    hz,
+                    true,
+                    smoothed[peak_index] - SLOPE_FLOOR_DB,
+                )
+            }),
+            high_slope_db_per_octave: corner(
+                &CENTERS,
+                &smoothed,
+                peak_index,
+                smoothed[peak_index],
+                CORNER_DROP_DB,
+                false,
+            )
+            .and_then(|hz| {
+                slope_outward(
+                    &CENTERS,
+                    &smoothed,
+                    hz,
+                    false,
+                    smoothed[peak_index] - SLOPE_FLOOR_DB,
+                )
+            }),
             band_bins: vec![10; CENTERS.len()],
             band_dbfs,
+        }
+    }
+
+    /// The two corners as the user would set them: a low-pass on the group
+    /// covering the bottom and a high-pass on the group covering the top.
+    fn overlap_octaves(low: &SetMeasurement, high: &SetMeasurement) -> Option<f32> {
+        match (low.corner_high_hz, high.corner_low_hz) {
+            (Some(lp), Some(hp)) if hp > 0.0 => Some((lp / hp).log2()),
+            _ => None,
         }
     }
 
@@ -1008,6 +1283,71 @@ mod tests {
         assert_eq!(interpolate_at(&centers, &levels, 4000.0), Some(-30.0));
         let mid = interpolate_at(&centers, &levels, 141.42).unwrap();
         assert!((mid - -15.0).abs() < 0.1, "midpoint read back as {mid}");
+    }
+
+    /// A 12 dB per octave filter has to be reported as roughly 12 dB per
+    /// octave, or the slope figure is decoration rather than information.
+    #[test]
+    fn a_known_slope_is_measured_as_that_slope() {
+        let source = noise(FS as usize * 6);
+        let sub = set("sub", levels(&low_pass(&source, 80.0)));
+        let doors = set("doors", levels(&high_pass(&source, 80.0)));
+
+        let lp = sub.high_slope_db_per_octave.expect("no low-pass slope");
+        let hp = doors.low_slope_db_per_octave.expect("no high-pass slope");
+        assert!(
+            (lp - 12.0).abs() < 3.0,
+            "low-pass slope measured as {lp:.1} dB/octave, expected about 12"
+        );
+        assert!(
+            (hp - 12.0).abs() < 3.0,
+            "high-pass slope measured as {hp:.1} dB/octave, expected about 12"
+        );
+    }
+
+    /// Matched corners are aligned; pulling them apart is a gap; pushing them
+    /// past each other is an overlap. All three have to be told apart, because
+    /// the fix is a different knob in a different direction each time.
+    #[test]
+    fn the_two_filters_are_compared_as_a_gap_or_an_overlap() {
+        let source = noise(FS as usize * 6);
+
+        let aligned = overlap_octaves(
+            &set("sub", levels(&low_pass(&source, 80.0))),
+            &set("doors", levels(&high_pass(&source, 80.0))),
+        )
+        .expect("no comparison for the aligned pair");
+        assert!(
+            aligned.abs() < 0.6,
+            "matched filters should read as nearly aligned, got {aligned:.2} octave"
+        );
+
+        // Sub stops early, doors start late: nothing covers the middle.
+        let gap = overlap_octaves(
+            &set("sub", levels(&low_pass(&source, 40.0))),
+            &set("doors", levels(&high_pass(&source, 160.0))),
+        )
+        .expect("no comparison for the split pair");
+
+        // Sub runs on well past where the doors have already come in.
+        let overlap = overlap_octaves(
+            &set("sub", levels(&low_pass(&source, 160.0))),
+            &set("doors", levels(&high_pass(&source, 40.0))),
+        )
+        .expect("no comparison for the overlapping pair");
+
+        assert!(
+            gap < -ALIGN_TOLERANCE_OCTAVES,
+            "expected a gap, got {gap:.2}"
+        );
+        assert!(
+            overlap > ALIGN_TOLERANCE_OCTAVES,
+            "expected an overlap, got {overlap:.2}"
+        );
+        assert!(
+            gap < aligned && aligned < overlap,
+            "gap {gap:.2}, aligned {aligned:.2} and overlap {overlap:.2} are not ordered"
+        );
     }
 
     #[test]

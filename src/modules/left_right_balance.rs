@@ -246,7 +246,7 @@ impl Measurement for LeftRightBalance {
             }
         }
 
-        Ok(MeasurementResult::LeftRightBalance(
+        Ok(MeasurementResult::LeftRightBalance(Box::new(
             LeftRightBalanceResult {
                 sample_rate: capture.sample_rate,
                 capture_s: capture.seconds(),
@@ -261,7 +261,7 @@ impl Measurement for LeftRightBalance {
                 recommendation,
                 warnings,
             },
-        ))
+        )))
     }
 }
 
