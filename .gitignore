@@ -3,3 +3,6 @@
 
 # Measurement results are the user's data, not the repository's
 /measurements/
+
+# Generated test tracks; make your own with `zvuk generate`
+/signals/

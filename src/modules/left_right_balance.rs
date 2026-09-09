@@ -1,34 +1,43 @@
 //! The `left-right-balance` module: level difference between left and right.
 //!
-//! Pink noise (the same buffer for both sides, so we compare like with like) is
-//! played into the left channel only, then into the right, while the microphone
-//! records at the listening position. The steady-state part of each capture
-//! yields a broadband RMS and per-octave-band RMS values computed with an FFT.
+//! `zvuk generate` writes a stereo track: pink noise in the left channel, then
+//! the same noise in the right, then the left one more time, separated by
+//! silence. The user plays that track through the car - off a USB stick, a
+//! phone, a CD - while `zvuk` records at the listening position.
 //!
-//! Sanity check: optionally the left side is measured a second time at the end.
-//! If two measurements of the same side disagree by more than 0.5 dB, something
-//! other than the car was being measured - usually the microphone moved - and
-//! the result is worthless.
+//! Because the tool never plays anything, it does not know when the track
+//! started. It finds the bursts in the recording by their energy, which is
+//! what the silences between them are for.
+//!
+//! Sanity check: the third burst is the left side again. If two measurements
+//! of the same side disagree by more than 0.5 dB, something other than the car
+//! was being measured - usually the microphone moved - and the result is
+//! worthless.
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::audio::{signal, AudioContext};
-use crate::dsp::{self, octave};
-use crate::measurement::{Measurement, MeasurementResult};
+use crate::audio::signal::{self, Channel};
+use crate::audio::AudioContext;
+use crate::dsp::segment::{self, Burst};
+use crate::dsp::{self as dsp, octave};
+use crate::measurement::{Measurement, MeasurementResult, SignalParams, TestSignal};
 use crate::prompt;
 
-/// Seconds dropped from each end of the capture (output latency, room decay).
-const GUARD_S: f32 = 0.4;
-/// How long recording continues after the signal has finished.
-const TAIL_S: f32 = 0.4;
+/// Seconds dropped from both ends of a detected burst: the fade ramps plus any
+/// slop in the detected edges.
+const EDGE_TRIM_S: f32 = 0.25;
+/// Anything shorter than this is a door slam, not a measurement burst.
+const MIN_BURST_S: f32 = 1.0;
+/// How much the burst lengths may differ before the segmentation is suspect.
+const LENGTH_TOLERANCE: f32 = 0.25;
 /// Threshold above which two measurements of one side are irreconcilable.
 const SANITY_LIMIT_DB: f32 = 0.5;
 /// Broadband difference below which balancing is pointless.
 const NEGLIGIBLE_DB: f32 = 0.5;
 /// Spread of per-band differences above which this is not a level problem.
 const TILT_WARN_DB: f32 = 4.0;
-/// Fixed generator seed, so measurements are reproducible.
+/// Fixed generator seed, so every generated track is identical.
 const NOISE_SEED: u64 = 0xCAFE_BABE_1234_5678;
 
 pub struct LeftRightBalance;
@@ -37,6 +46,9 @@ pub struct LeftRightBalance;
 pub struct ChannelMeasurement {
     /// "left", "right" or "left-recheck".
     pub channel: String,
+    /// Where the burst sat in the recording, in seconds.
+    pub start_s: f32,
+    pub length_s: f32,
     pub broadband_rms: f32,
     pub broadband_dbfs: f32,
     pub peak: f32,
@@ -46,19 +58,18 @@ pub struct ChannelMeasurement {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeftRightBalanceResult {
-    pub duration_s: f32,
-    pub level_dbfs: f32,
     /// Input sample rate the analysis ran at.
     pub sample_rate: u32,
+    pub capture_s: f32,
     pub band_centers_hz: Vec<f32>,
     pub left: ChannelMeasurement,
     pub right: ChannelMeasurement,
-    /// Second measurement of the left side, if the sanity check was enabled.
+    /// Third burst, present when the generated track included the recheck.
     pub left_repeat: Option<ChannelMeasurement>,
     /// Broadband difference L - R in dB (positive means left is louder).
     pub broadband_diff_db: f32,
     pub band_diff_db: Vec<f32>,
-    /// Difference between the two left-side measurements, if one was taken.
+    /// Difference between the two left-side measurements, if there were two.
     pub repeatability_db: Option<f32>,
     pub sanity_check_passed: Option<bool>,
     pub recommendation: String,
@@ -74,54 +85,104 @@ impl Measurement for LeftRightBalance {
         "Level difference between left and right, broadband + octave bands (125 Hz - 8 kHz)"
     }
 
-    fn run(&self, ctx: &AudioContext) -> Result<MeasurementResult> {
-        if ctx.output.channels() < 2 {
-            bail!(
-                "output device has only {} channel(s); an L/R measurement needs at least 2",
-                ctx.output.channels()
-            );
-        }
+    fn signal(&self, params: &SignalParams) -> Option<TestSignal> {
+        let order: Vec<Channel> = if params.recheck {
+            vec![Channel::Left, Channel::Right, Channel::Left]
+        } else {
+            vec![Channel::Left, Channel::Right]
+        };
 
-        println!();
-        println!("== Left / right balance ==");
-        println!("Before you start:");
-        println!("  1) Put the microphone at the listening position and DO NOT MOVE IT.");
-        println!("  2) Engine off, ventilation off, windows closed.");
-        println!("  3) Stay quiet and still while it runs.");
-        println!(
-            "  Pink noise will play for {:.1} s per channel at {:.1} dBFS peak.",
-            ctx.params.duration_s, ctx.params.level_dbfs
-        );
-        println!();
-
-        let sanity = prompt::confirm(
-            "Measure the left side twice to verify the result is repeatable (recommended)?",
-            true,
-        )?;
-        if !sanity {
-            println!("  Sanity check skipped. Trust the result only as far as you trust");
-            println!("  that neither the microphone nor the car moved during the run.");
-        }
-
-        prompt::wait_enter("Press Enter once it is quiet and the microphone is in place.")?;
-
-        // The same signal for both sides, otherwise we would not be comparing
-        // the same thing twice.
-        let noise = signal::pink_noise_burst(
-            ctx.output.sample_rate(),
-            ctx.params.duration_s,
-            ctx.params.level_dbfs,
+        let samples = signal::burst_track(
+            params.sample_rate,
+            params.duration_s,
+            params.level_dbfs,
+            params.lead_in_s,
+            params.gap_s,
+            &order,
             NOISE_SEED,
         );
 
-        let mut warnings = Vec::new();
+        // Two columns: when the section starts, and how long it lasts.
+        let mut layout = Vec::new();
+        let mut at = 0.0f32;
+        let mut section = |at: &mut f32, length: f32, what: String| {
+            layout.push(format!("{:>6.1} s  {length:>4.1} s  {what}", *at));
+            *at += length;
+        };
+        section(&mut at, params.lead_in_s, "silence (lead-in)".to_string());
+        for (i, channel) in order.iter().enumerate() {
+            if i > 0 {
+                section(&mut at, params.gap_s, "silence".to_string());
+            }
+            let what = if i == 2 {
+                format!(
+                    "pink noise, {} channel only (repeat, for the sanity check)",
+                    channel.label()
+                )
+            } else {
+                format!("pink noise, {} channel only", channel.label())
+            };
+            section(&mut at, params.duration_s, what);
+        }
+        section(&mut at, params.gap_s, "silence (tail)".to_string());
 
-        let left = capture(ctx, &noise, 0, "left", &mut warnings)?;
-        let right = capture(ctx, &noise, 1, "right", &mut warnings)?;
-        let left_repeat = if sanity {
-            Some(capture(ctx, &noise, 0, "left-recheck", &mut warnings)?)
-        } else {
+        let instructions = vec![
+            "1. Copy this file to whatever the car plays from: USB stick, phone, CD.".to_string(),
+            "2. Put the microphone at the listening position and do not move it again.".to_string(),
+            "3. Engine off, ventilation off, windows closed.".to_string(),
+            "4. Set the volume to a normal listening level and DO NOT CHANGE IT".to_string(),
+            "   while the track plays. Turn off loudness, DSP presets and any".to_string(),
+            "   automatic volume that reacts to speed.".to_string(),
+            "5. Set balance and fader to centre, so you measure the system and not".to_string(),
+            "   the setting you are trying to find.".to_string(),
+            "6. Start `zvuk` on the laptop, then press play. Sit still until the".to_string(),
+            "   track ends, then stop the recording.".to_string(),
+        ];
+
+        Some(TestSignal {
+            file_stem: format!("zvuk-{}", self.name()),
+            sample_rate: params.sample_rate,
+            channels: 2,
+            samples,
+            layout,
+            instructions,
+        })
+    }
+
+    fn run(&self, ctx: &AudioContext) -> Result<MeasurementResult> {
+        println!();
+        println!("== Left / right balance ==");
+        println!("You need the generated track first:");
+        println!("    zvuk generate --module {}", self.name());
+        println!();
+        println!("Before you start:");
+        println!("  1) Microphone at the listening position, and DO NOT MOVE IT.");
+        println!("  2) Engine off, ventilation off, windows closed.");
+        println!("  3) Balance and fader centred, loudness and DSP presets off.");
+        println!("  4) Volume at a normal listening level - and leave it there.");
+        println!();
+
+        let capture = ctx.record_while(|| {
+            println!("Recording. Press play on the track now, then sit still.");
+            prompt::wait_enter("Press Enter once the track has finished.")
+        })?;
+
+        let sample_rate = capture.sample_rate as f32;
+        println!();
+        println!(
+            "Captured {:.1} s. Looking for the bursts...",
+            capture.seconds()
+        );
+
+        let mut warnings = Vec::new();
+        let mut measured = measure_bursts(&capture.samples, sample_rate, &mut warnings)?;
+
+        let left = measured.remove(0);
+        let right = measured.remove(0);
+        let left_repeat = if measured.is_empty() {
             None
+        } else {
+            Some(measured.remove(0))
         };
 
         let centers: Vec<f32> = octave::OCTAVE_CENTERS_HZ.to_vec();
@@ -140,12 +201,15 @@ impl Measurement for LeftRightBalance {
 
         print_table(&centers, &left, &right, &band_diff_db, broadband_diff_db);
 
-        if let (Some(diff), Some(passed)) = (repeatability_db, sanity_check_passed) {
-            println!();
-            println!("Sanity check (left channel measured twice): {diff:.2} dB apart, broadband");
-            if passed {
+        match (repeatability_db, sanity_check_passed) {
+            (Some(diff), Some(true)) => {
+                println!();
+                println!("Sanity check (left measured twice): {diff:.2} dB apart, broadband");
                 println!("  OK, the measurement is repeatable (limit {SANITY_LIMIT_DB:.1} dB).");
-            } else {
+            }
+            (Some(diff), Some(false)) => {
+                println!();
+                println!("Sanity check (left measured twice): {diff:.2} dB apart, broadband");
                 println!("  !! WARNING !!");
                 println!(
                     "  Two measurements of THE SAME side differ by {diff:.2} dB, more than the \
@@ -157,6 +221,11 @@ impl Measurement for LeftRightBalance {
                     "repeatability {diff:.2} dB exceeded the {SANITY_LIMIT_DB:.1} dB limit; \
                      the measurement is not trustworthy"
                 ));
+            }
+            _ => {
+                println!();
+                println!("Sanity check: not available - the track had no repeat burst.");
+                println!("  Generate without --no-recheck to get one.");
             }
         }
 
@@ -179,9 +248,8 @@ impl Measurement for LeftRightBalance {
 
         Ok(MeasurementResult::LeftRightBalance(
             LeftRightBalanceResult {
-                duration_s: ctx.params.duration_s,
-                level_dbfs: ctx.params.level_dbfs,
-                sample_rate: ctx.input.sample_rate(),
+                sample_rate: capture.sample_rate,
+                capture_s: capture.seconds(),
                 band_centers_hz: centers,
                 left,
                 right,
@@ -197,37 +265,96 @@ impl Measurement for LeftRightBalance {
     }
 }
 
-/// Plays noise into one channel, records the microphone and computes levels.
-fn capture(
-    ctx: &AudioContext,
-    noise: &[f32],
-    channel: usize,
+/// Segments a capture and measures every burst in it.
+///
+/// Split out of `run` so the whole chain - segmentation, trimming, band
+/// analysis - can be tested against a synthetic recording.
+fn measure_bursts(
+    samples: &[f32],
+    sample_rate: f32,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<ChannelMeasurement>> {
+    let bursts = segment::find_bursts(samples, sample_rate, MIN_BURST_S)?;
+    let bursts = validate(&bursts, sample_rate)?;
+
+    for (i, b) in bursts.iter().enumerate() {
+        println!(
+            "  burst {} at {:>6.1} s, {:.1} s long",
+            i + 1,
+            b.start as f32 / sample_rate,
+            b.seconds(sample_rate)
+        );
+    }
+
+    let labels = ["left", "right", "left-recheck"];
+    bursts
+        .iter()
+        .zip(labels.iter())
+        .map(|(b, label)| analyse(samples, sample_rate, *b, label, warnings))
+        .collect()
+}
+
+/// Rejects a segmentation that cannot be the track we generated.
+fn validate(bursts: &[Burst], sample_rate: f32) -> Result<Vec<Burst>> {
+    match bursts.len() {
+        0 => bail!(
+            "no measurement burst found in the recording. Did the track actually play, and \
+             is the selected input device the microphone in the car?"
+        ),
+        1 => bail!(
+            "only one burst found. The recording probably started after the first one or \
+             stopped before the second - start recording before pressing play, and stop it \
+             after the track ends."
+        ),
+        2 | 3 => {}
+        n => bail!(
+            "found {n} loud sections, expected 2 or 3. Something else was making noise - \
+             a passing car, the ventilation, a door - so the bursts cannot be told apart. \
+             Measure again somewhere quieter."
+        ),
+    }
+
+    let lengths: Vec<f32> = bursts.iter().map(|b| b.seconds(sample_rate)).collect();
+    let longest = lengths.iter().cloned().fold(f32::MIN, f32::max);
+    let shortest = lengths.iter().cloned().fold(f32::MAX, f32::min);
+    if longest - shortest > longest * LENGTH_TOLERANCE {
+        bail!(
+            "the bursts have very different lengths ({shortest:.1} s to {longest:.1} s), so \
+             they were probably not cut where the track actually changed channel. Measure \
+             again with less background noise."
+        );
+    }
+
+    Ok(bursts.to_vec())
+}
+
+/// Cuts one burst out of the recording and computes its levels.
+fn analyse(
+    samples: &[f32],
+    sample_rate: f32,
+    burst: Burst,
     label: &str,
     warnings: &mut Vec<String>,
 ) -> Result<ChannelMeasurement> {
-    println!();
-    println!("-> Measuring the {label} channel, hold still...");
-
-    let interleaved = ctx.mono_to_channel(noise, channel)?;
-    let recording = ctx.play_and_record(&interleaved, TAIL_S)?;
-    let segment = recording.steady_state(GUARD_S)?;
+    let trimmed = burst.trimmed(sample_rate, EDGE_TRIM_S).ok_or_else(|| {
+        anyhow::anyhow!(
+            "the {label} burst is too short to analyse ({:.2} s)",
+            burst.seconds(sample_rate)
+        )
+    })?;
+    let segment = &samples[trimmed.start..trimmed.end.min(samples.len())];
 
     let broadband_rms = dsp::rms(segment);
     let broadband_dbfs = dsp::db(broadband_rms);
     let peak = dsp::peak(segment);
 
-    let bands = octave::octave_bands(
-        segment,
-        recording.sample_rate as f32,
-        &octave::OCTAVE_CENTERS_HZ,
-    )?;
+    let bands = octave::octave_bands(segment, sample_rate, &octave::OCTAVE_CENTERS_HZ)?;
     let band_rms: Vec<f32> = bands.iter().map(|b| b.rms).collect();
     let band_dbfs: Vec<f32> = band_rms.iter().map(|&r| dsp::db(r)).collect();
 
     println!(
-        "   done: {broadband_dbfs:.1} dBFS broadband, peak {:.1} dBFS, {} samples analysed",
-        dsp::db(peak),
-        segment.len()
+        "  {label:<13} {broadband_dbfs:>6.1} dBFS broadband, peak {:>6.1} dBFS",
+        dsp::db(peak)
     );
 
     if peak >= 0.99 {
@@ -240,7 +367,7 @@ fn capture(
         warnings.push(format!(
             "{label}: very quiet capture ({broadband_dbfs:.1} dBFS), the result may be noise"
         ));
-        println!("   !! very quiet capture - raise the volume or the microphone gain");
+        println!("   !! very quiet capture - turn the car up or raise the microphone gain");
     }
     if let Some(b) = bands.iter().find(|b| b.bins == 0) {
         warnings.push(format!(
@@ -251,6 +378,8 @@ fn capture(
 
     Ok(ChannelMeasurement {
         channel: label.to_string(),
+        start_s: burst.start as f32 / sample_rate,
+        length_s: burst.seconds(sample_rate),
         broadband_rms,
         broadband_dbfs,
         peak,
@@ -361,7 +490,7 @@ fn build_recommendation(
     }
 
     if sanity_check_passed.is_none() {
-        text.push_str(" (No sanity check was run, so repeatability is unverified.)");
+        text.push_str(" (No repeat burst in the track, so repeatability is unverified.)");
     }
 
     text
@@ -384,7 +513,7 @@ pub fn print_result(result: &LeftRightBalanceResult) {
         };
         println!("Sanity check: {diff:.2} dB apart, broadband -> {verdict}");
     } else {
-        println!("Sanity check: not run");
+        println!("Sanity check: not available (no repeat burst in the track)");
     }
     println!("Recommendation: {}", result.recommendation);
     if !result.warnings.is_empty() {
@@ -392,5 +521,135 @@ pub fn print_result(result: &LeftRightBalanceResult) {
         for w in &result.warnings {
             println!("  - {w}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FS: f32 = 48_000.0;
+
+    fn burst(start_s: f32, len_s: f32) -> Burst {
+        Burst {
+            start: (start_s * FS) as usize,
+            end: ((start_s + len_s) * FS) as usize,
+        }
+    }
+
+    #[test]
+    fn two_or_three_equal_bursts_are_accepted() {
+        assert!(validate(&[burst(5.0, 3.0), burst(10.0, 3.0)], FS).is_ok());
+        assert!(validate(&[burst(5.0, 3.0), burst(10.0, 3.0), burst(15.0, 3.0)], FS).is_ok());
+    }
+
+    #[test]
+    fn a_missing_burst_is_explained_not_silently_accepted() {
+        let err = validate(&[burst(5.0, 3.0)], FS).unwrap_err().to_string();
+        assert!(err.contains("only one burst"), "unexpected error: {err}");
+
+        let err = validate(&[], FS).unwrap_err().to_string();
+        assert!(
+            err.contains("no measurement burst"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn extra_noise_sections_are_rejected() {
+        let bursts = [
+            burst(5.0, 3.0),
+            burst(10.0, 3.0),
+            burst(15.0, 3.0),
+            burst(20.0, 3.0),
+        ];
+        let err = validate(&bursts, FS).unwrap_err().to_string();
+        assert!(err.contains("4 loud sections"), "unexpected error: {err}");
+    }
+
+    /// Simulates a microphone in a car: it hears both speakers summed, each
+    /// with its own gain, on top of a faint background.
+    fn fake_recording(left_gain: f32, right_gain: f32) -> Vec<f32> {
+        let track = signal::burst_track(
+            FS as u32,
+            2.0,
+            -6.0,
+            1.0,
+            1.0,
+            &[Channel::Left, Channel::Right, Channel::Left],
+            NOISE_SEED,
+        );
+        let mut state = 0x5EED_1234_ABCD_9876u64;
+        track
+            .chunks(2)
+            .map(|frame| {
+                state ^= state >> 12;
+                state ^= state << 25;
+                state ^= state >> 27;
+                let background =
+                    ((state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 40) as f32 / 8_388_608.0) - 1.0;
+                frame[0] * left_gain + frame[1] * right_gain + background * 0.0005
+            })
+            .collect()
+    }
+
+    /// The end-to-end check: generate a track, pretend to record it through a
+    /// system that is 2 dB louder on the left, and see the analysis say so.
+    #[test]
+    fn a_known_imbalance_comes_back_out_of_the_whole_chain() {
+        let imbalance_db = 2.0f32;
+        let samples = fake_recording(1.0, 10f32.powf(-imbalance_db / 20.0));
+
+        let mut warnings = Vec::new();
+        let measured = measure_bursts(&samples, FS, &mut warnings).unwrap();
+
+        assert_eq!(measured.len(), 3, "expected left, right and the recheck");
+        assert_eq!(measured[0].channel, "left");
+        assert_eq!(measured[1].channel, "right");
+        assert_eq!(measured[2].channel, "left-recheck");
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+
+        let broadband = dsp::db_ratio(measured[0].broadband_rms, measured[1].broadband_rms);
+        assert!(
+            (broadband - imbalance_db).abs() < 0.1,
+            "broadband difference came out as {broadband:.2} dB, expected {imbalance_db:.2} dB"
+        );
+
+        for (i, &center) in octave::OCTAVE_CENTERS_HZ.iter().enumerate() {
+            let diff = dsp::db_ratio(measured[0].band_rms[i], measured[1].band_rms[i]);
+            assert!(
+                (diff - imbalance_db).abs() < 0.2,
+                "band {center} Hz came out as {diff:.2} dB, expected {imbalance_db:.2} dB"
+            );
+        }
+
+        // Both left bursts are the same signal at the same gain, so the sanity
+        // check must be comfortably inside its limit.
+        let repeat = dsp::db_ratio(measured[0].broadband_rms, measured[2].broadband_rms).abs();
+        assert!(
+            repeat < 0.1,
+            "repeatability came out as {repeat:.2} dB on identical bursts"
+        );
+    }
+
+    #[test]
+    fn a_balanced_system_reads_as_balanced() {
+        let samples = fake_recording(1.0, 1.0);
+        let mut warnings = Vec::new();
+        let measured = measure_bursts(&samples, FS, &mut warnings).unwrap();
+        let broadband = dsp::db_ratio(measured[0].broadband_rms, measured[1].broadband_rms);
+        assert!(
+            broadband.abs() < 0.05,
+            "expected 0 dB, got {broadband:.3} dB"
+        );
+        assert_eq!(louder_label(broadband), "balanced");
+    }
+
+    #[test]
+    fn wildly_uneven_bursts_are_rejected() {
+        let err = validate(&[burst(5.0, 3.0), burst(10.0, 1.5)], FS)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("different lengths"), "unexpected error: {err}");
     }
 }

@@ -1,6 +1,7 @@
 //! Shared DSP helpers for measurement modules.
 
 pub mod octave;
+pub mod segment;
 
 /// Lowest level we still convert to dB (about -240 dBFS).
 const FLOOR: f32 = 1e-12;

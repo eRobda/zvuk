@@ -94,6 +94,69 @@ pub fn pink_noise_burst(sample_rate: u32, seconds: f32, level_dbfs: f32, seed: u
     buf
 }
 
+/// Which output channel a burst is placed in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    Left,
+    Right,
+}
+
+impl Channel {
+    fn index(self) -> usize {
+        match self {
+            Channel::Left => 0,
+            Channel::Right => 1,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Channel::Left => "left",
+            Channel::Right => "right",
+        }
+    }
+}
+
+/// Builds the stereo track the user plays through the car: lead-in silence,
+/// then one burst per entry in `order`, separated by silence.
+///
+/// Every burst is the **same** pink noise buffer, so the sides are compared
+/// like with like rather than against two different noise realisations.
+pub fn burst_track(
+    sample_rate: u32,
+    duration_s: f32,
+    level_dbfs: f32,
+    lead_in_s: f32,
+    gap_s: f32,
+    order: &[Channel],
+    seed: u64,
+) -> Vec<f32> {
+    const CHANNELS: usize = 2;
+
+    let burst = pink_noise_burst(sample_rate, duration_s, level_dbfs, seed);
+    let silence = |seconds: f32| vec![0.0f32; frames(sample_rate, seconds) * CHANNELS];
+
+    let mut track = silence(lead_in_s.max(0.0));
+    for (i, channel) in order.iter().enumerate() {
+        if i > 0 {
+            track.extend_from_slice(&silence(gap_s.max(0.0)));
+        }
+        for &s in &burst {
+            let mut frame = [0.0f32; CHANNELS];
+            frame[channel.index()] = s;
+            track.extend_from_slice(&frame);
+        }
+    }
+    // Trailing silence, so a player that stops abruptly does not clip the last
+    // burst and the analysis still sees a gap after it.
+    track.extend_from_slice(&silence(gap_s.max(0.0)));
+    track
+}
+
+fn frames(sample_rate: u32, seconds: f32) -> usize {
+    ((sample_rate as f32) * seconds).round().max(0.0) as usize
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +186,77 @@ mod tests {
         let buf = pink_noise_burst(48_000, 1.0, -6.0, 1);
         assert!(buf[0].abs() < 1e-6);
         assert!(buf[buf.len() - 1].abs() < 1e-6);
+    }
+
+    #[test]
+    fn burst_track_has_the_expected_length_and_channel_placement() {
+        let fs = 48_000;
+        let track = burst_track(
+            fs,
+            1.0,
+            -6.0,
+            2.0,
+            0.5,
+            &[Channel::Left, Channel::Right, Channel::Left],
+            1,
+        );
+
+        // lead-in + 3 bursts + 2 inner gaps + trailing gap, times two channels.
+        let expected_frames = (2.0 + 3.0 * 1.0 + 2.0 * 0.5 + 0.5) * fs as f32;
+        assert_eq!(track.len(), expected_frames as usize * 2);
+
+        let energy = |channel: usize, from_s: f32, to_s: f32| -> f32 {
+            let from = (from_s * fs as f32) as usize * 2 + channel;
+            let to = (to_s * fs as f32) as usize * 2 + channel;
+            track[from..to].iter().step_by(2).map(|s| s.abs()).sum()
+        };
+
+        // Layout: 2.0 s silence | 1.0 s left | 0.5 s | 1.0 s right | 0.5 s |
+        //         1.0 s left | 0.5 s silence.
+        assert!(
+            energy(0, 2.1, 2.9) > 0.0,
+            "first burst missing from the left channel"
+        );
+        assert_eq!(
+            energy(1, 2.1, 2.9),
+            0.0,
+            "first burst leaked into the right channel"
+        );
+        assert!(
+            energy(1, 3.6, 4.4) > 0.0,
+            "second burst missing from the right channel"
+        );
+        assert_eq!(
+            energy(0, 3.6, 4.4),
+            0.0,
+            "second burst leaked into the left channel"
+        );
+        assert!(
+            energy(0, 5.1, 5.9) > 0.0,
+            "third burst missing from the left channel"
+        );
+        assert_eq!(
+            energy(1, 5.1, 5.9),
+            0.0,
+            "third burst leaked into the right channel"
+        );
+    }
+
+    #[test]
+    fn every_burst_carries_the_identical_signal() {
+        let fs = 8_000;
+        let track = burst_track(fs, 1.0, -6.0, 0.0, 0.5, &[Channel::Left, Channel::Right], 3);
+        let first: Vec<f32> = track[0..fs as usize * 2]
+            .iter()
+            .step_by(2)
+            .copied()
+            .collect();
+        let offset = (1.5 * fs as f32) as usize * 2 + 1;
+        let second: Vec<f32> = track[offset..offset + fs as usize * 2]
+            .iter()
+            .step_by(2)
+            .copied()
+            .collect();
+        assert_eq!(first, second);
     }
 }

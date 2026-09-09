@@ -9,9 +9,10 @@ use clap::{Args, Parser, Subcommand};
     name = "zvuk",
     version,
     about = "Measure and tune car audio systems",
-    long_about = "A modular measurement tool for car audio.\n\
-                  With no subcommand it runs a measurement: lists devices, then \
-                  lets you pick one and choose a module.",
+    long_about = "A modular measurement tool for car audio.\n\n\
+                  The tool never plays audio itself. `zvuk generate` writes a test \
+                  track for you to play through the car - off a USB stick, a phone, \
+                  a CD - and `zvuk` with no subcommand records it and does the maths.",
     allow_negative_numbers = true
 )]
 pub struct Cli {
@@ -24,7 +25,9 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// List the available input and output audio devices.
+    /// Write the test track a module needs you to play.
+    Generate(GenerateArgs),
+    /// List the available input devices.
     Devices,
     /// List the registered measurement modules.
     Modules,
@@ -38,7 +41,7 @@ pub enum Command {
 #[derive(Debug, Clone, Args)]
 #[command(allow_negative_numbers = true)]
 pub struct RunArgs {
-    /// Module name; without it you get an interactive picker.
+    /// Module to run; without it you get an interactive picker.
     #[arg(short, long)]
     pub module: Option<String>,
 
@@ -50,25 +53,13 @@ pub struct RunArgs {
     #[arg(short = 'i', long)]
     pub input: Option<String>,
 
-    /// Output device: index from the listing or part of the name.
-    #[arg(short = 'o', long)]
-    pub output: Option<String>,
-
-    /// Desired sample rate; the closest supported one is used.
+    /// Desired capture sample rate; the closest supported one is used.
     #[arg(long, default_value_t = 48_000)]
     pub sample_rate: u32,
 
     /// Fixed buffer size in samples (driver default otherwise).
     #[arg(long)]
     pub buffer: Option<u32>,
-
-    /// Length of the test signal in seconds.
-    #[arg(long, default_value_t = 3.0)]
-    pub duration: f32,
-
-    /// Test signal level in dBFS (peak).
-    #[arg(long, default_value_t = -6.0)]
-    pub level: f32,
 
     /// Directory measurements are written to.
     #[arg(long, default_value = "measurements")]
@@ -77,4 +68,44 @@ pub struct RunArgs {
     /// Do not write the result to disk.
     #[arg(long)]
     pub no_save: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+#[command(allow_negative_numbers = true)]
+pub struct GenerateArgs {
+    /// Module to generate the track for; without it you get a picker.
+    #[arg(short, long)]
+    pub module: Option<String>,
+
+    /// Directory the track is written to.
+    #[arg(long, default_value = "signals")]
+    pub out_dir: PathBuf,
+
+    /// Sample rate of the generated file. Try 44100 for an older head unit.
+    #[arg(long, default_value_t = 48_000)]
+    pub sample_rate: u32,
+
+    /// Length of one measurement burst, in seconds.
+    #[arg(long, default_value_t = 3.0)]
+    pub duration: f32,
+
+    /// Peak level of the burst in the file, in dBFS.
+    #[arg(long, default_value_t = -6.0)]
+    pub level: f32,
+
+    /// Silence before the first burst, so you can sit down after pressing play.
+    #[arg(long, default_value_t = 5.0)]
+    pub lead_in: f32,
+
+    /// Silence between bursts. This is what lets the analysis tell them apart.
+    #[arg(long, default_value_t = 2.0)]
+    pub gap: f32,
+
+    /// Leave out the repeated burst, and with it the repeatability check.
+    #[arg(long)]
+    pub no_recheck: bool,
+
+    /// Overwrite an existing file instead of refusing.
+    #[arg(long)]
+    pub force: bool,
 }
