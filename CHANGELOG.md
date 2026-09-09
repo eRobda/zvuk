@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-09
+
+The tool stopped playing audio. It writes a track, you play it through the car.
+This is a breaking change to the storage format; the previous release cannot
+read files written by this one, and vice versa.
+
 ### Changed
 
 - **The tool no longer plays audio.** `zvuk generate` writes a 16-bit WAV test
@@ -35,7 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An end-to-end test that generates a track, synthesises a recording of a
   system 2 dB louder on the left, and asserts the analysis says 2 dB.
 
-
 ## [0.1.0] - 2026-09-09
 
 First tagged version: the measurement core plus one module. The signal
@@ -62,5 +67,6 @@ against a car.
   known sine, exactness of a known attenuation per band, and determinism of the
   noise generator.
 
-[Unreleased]: https://github.com/eRobda/zvuk/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/eRobda/zvuk/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/eRobda/zvuk/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/eRobda/zvuk/releases/tag/v0.1.0
