@@ -1,0 +1,26 @@
+[package]
+name = "zvuk"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+authors = ["Robin Ustohal <robin.ustohal@cdc.cz>"]
+description = "Modular CLI for measuring and tuning car audio systems"
+repository = "https://github.com/eRobda/zvuk"
+homepage = "https://github.com/eRobda/zvuk"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["audio", "measurement", "car-audio", "acoustics", "cli"]
+categories = ["command-line-utilities", "multimedia::audio", "science"]
+exclude = ["/.github", "/measurements"]
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+cpal = "0.15"
+realfft = "3.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3

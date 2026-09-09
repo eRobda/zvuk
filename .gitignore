@@ -1,0 +1,5 @@
+# Rust build output
+/target
+
+# Measurement results are the user's data, not the repository's
+/measurements/
