@@ -15,22 +15,6 @@ pub fn read_line(question: &str) -> Result<String> {
     Ok(buf.trim().to_string())
 }
 
-/// Yes/no question. An empty answer picks `default`.
-pub fn confirm(question: &str, default: bool) -> Result<bool> {
-    let hint = if default { "Y/n" } else { "y/N" };
-    loop {
-        let answer = read_line(&format!("{question} [{hint}]: "))?;
-        if answer.is_empty() {
-            return Ok(default);
-        }
-        match answer.to_lowercase().as_str() {
-            "y" | "yes" => return Ok(true),
-            "n" | "no" => return Ok(false),
-            _ => println!("  Please answer 'y' or 'n'."),
-        }
-    }
-}
-
 /// Pick one entry from a numbered list. Returns the index.
 pub fn select(question: &str, count: usize, default: Option<usize>) -> Result<usize> {
     if count == 0 {

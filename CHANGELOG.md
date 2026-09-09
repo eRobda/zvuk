@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The tool no longer plays audio.** `zvuk generate` writes a 16-bit WAV test
+  track, the user plays it through the system being measured, and `zvuk` only
+  records. Measuring through the head unit means the result covers its DAC, EQ
+  and amplifier instead of bypassing them via an aux input - and it works in
+  cars that have no analogue input at all.
+- The output device is gone from device selection, from `AudioContext` and from
+  `zvuk devices`. With it went the Windows "same device for input and output"
+  problem.
+- `AudioContext` now offers `record` and `record_while` instead of `play`,
+  `record` and `play_and_record`.
+- Storage schema bumped to 2: `ContextInfo` no longer has output device fields,
+  and a channel measurement records where its burst sat in the recording.
+
+### Added
+
+- `zvuk generate`, with flags for burst length, level, lead-in, gap, file
+  sample rate and whether to include the repeat burst. It writes the WAV plus a
+  text file of instructions that travels with it onto the USB stick.
+- `Measurement::signal`, so a module describes the track it needs rather than
+  playing anything.
+- `dsp::segment`: burst detection by short-term RMS, since the tool no longer
+  knows when playback started. It refuses to guess when it finds the wrong
+  number of bursts or bursts of unequal length.
+- An end-to-end test that generates a track, synthesises a recording of a
+  system 2 dB louder on the left, and asserts the analysis says 2 dB.
+
+
 ## [0.1.0] - 2026-09-09
 
 First tagged version: the measurement core plus one module. The signal

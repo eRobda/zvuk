@@ -1,5 +1,8 @@
-//! Listing and picking audio devices, plus choosing the closest supported
+//! Listing and picking the input device, plus choosing the closest supported
 //! stream configuration.
+//!
+//! There is no output side. The tool never plays anything: `zvuk generate`
+//! writes a track and the user plays it through the system being measured.
 
 use anyhow::{anyhow, bail, Result};
 use cpal::traits::{DeviceTrait, HostTrait};
@@ -7,38 +10,15 @@ use cpal::{
     Device, Host, SampleFormat, SampleRate, SupportedStreamConfig, SupportedStreamConfigRange,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Direction {
-    Input,
-    Output,
-}
-
-impl Direction {
-    fn label(self) -> &'static str {
-        match self {
-            Direction::Input => "input",
-            Direction::Output => "output",
-        }
-    }
-}
-
 pub struct DeviceList {
-    pub direction: Direction,
     entries: Vec<(String, Device)>,
     pub default_index: Option<usize>,
 }
 
 impl DeviceList {
-    pub fn enumerate(host: &Host, direction: Direction) -> Result<Self> {
-        let devices: Vec<Device> = match direction {
-            Direction::Input => host.input_devices()?.collect(),
-            Direction::Output => host.output_devices()?.collect(),
-        };
-
-        let default_name = match direction {
-            Direction::Input => host.default_input_device().and_then(|d| d.name().ok()),
-            Direction::Output => host.default_output_device().and_then(|d| d.name().ok()),
-        };
+    pub fn inputs(host: &Host) -> Result<Self> {
+        let devices: Vec<Device> = host.input_devices()?.collect();
+        let default_name = host.default_input_device().and_then(|d| d.name().ok());
 
         let entries: Vec<(String, Device)> = devices
             .into_iter()
@@ -54,7 +34,6 @@ impl DeviceList {
             .and_then(|want| entries.iter().position(|(name, _)| name == want));
 
         Ok(Self {
-            direction,
             entries,
             default_index,
         })
@@ -69,11 +48,7 @@ impl DeviceList {
     }
 
     pub fn print(&self) {
-        println!(
-            "Available {} devices ({}):",
-            self.direction.label(),
-            self.entries.len()
-        );
+        println!("Available input devices ({}):", self.entries.len());
         if self.entries.is_empty() {
             println!("  (none)");
             return;
@@ -84,9 +59,8 @@ impl DeviceList {
             } else {
                 " "
             };
-            let detail = describe_default(device, self.direction);
             println!("  {mark}[{i}] {name}");
-            println!("       {detail}");
+            println!("       {}", describe_default(device));
         }
         println!("  (* = system default)");
     }
@@ -112,7 +86,7 @@ impl DeviceList {
             .map(|(i, _)| i)
             .collect();
         match hits.len() {
-            0 => bail!("no {} device matches '{spec}'", self.direction.label()),
+            0 => bail!("no input device matches '{spec}'"),
             1 => Ok(hits[0]),
             _ => bail!("'{spec}' matches several devices: {hits:?}"),
         }
@@ -126,12 +100,8 @@ impl DeviceList {
     }
 }
 
-fn describe_default(device: &Device, direction: Direction) -> String {
-    let cfg = match direction {
-        Direction::Input => device.default_input_config(),
-        Direction::Output => device.default_output_config(),
-    };
-    match cfg {
+fn describe_default(device: &Device) -> String {
+    match device.default_input_config() {
         Ok(c) => format!(
             "default: {} Hz, {} ch, {:?}",
             c.sample_rate().0,
@@ -142,52 +112,34 @@ fn describe_default(device: &Device, direction: Direction) -> String {
     }
 }
 
-/// Picks the configuration closest to `target_rate` with at least
-/// `min_channels` channels.
+/// Picks the input configuration closest to `target_rate`.
 ///
 /// The user is never asked for a sample rate; we take what the device offers.
-pub fn choose_config(
-    device: &Device,
-    direction: Direction,
-    target_rate: u32,
-    min_channels: u16,
-) -> Result<SupportedStreamConfig> {
-    let ranges: Vec<SupportedStreamConfigRange> = match direction {
-        Direction::Input => device.supported_input_configs().map(|it| it.collect()),
-        Direction::Output => device.supported_output_configs().map(|it| it.collect()),
-    }
-    .unwrap_or_default();
-
-    let usable: Vec<SupportedStreamConfigRange> = ranges
+pub fn choose_input_config(device: &Device, target_rate: u32) -> Result<SupportedStreamConfig> {
+    let usable: Vec<SupportedStreamConfigRange> = device
+        .supported_input_configs()
+        .map(|it| it.collect::<Vec<_>>())
+        .unwrap_or_default()
         .into_iter()
         .filter(|r| format_rank(r.sample_format()).is_some())
         .collect();
 
-    // Prefer a device with enough channels, then fall back to anything.
-    for required in [min_channels, 1] {
-        let best = usable
-            .iter()
-            .filter(|r| r.channels() >= required)
-            .min_by_key(|r| {
-                let rate = clamp_rate(r, target_rate);
-                let rate_penalty = (rate as i64 - target_rate as i64).unsigned_abs();
-                let fmt_penalty = format_rank(r.sample_format()).unwrap_or(u32::MAX);
-                let ch_penalty = (r.channels() as i64 - required as i64).unsigned_abs();
-                (rate_penalty, fmt_penalty as u64, ch_penalty)
-            });
-        if let Some(r) = best {
-            let rate = clamp_rate(r, target_rate);
-            return Ok((*r).with_sample_rate(SampleRate(rate)));
-        }
+    let best = usable.iter().min_by_key(|r| {
+        let rate = clamp_rate(r, target_rate);
+        let rate_penalty = (rate as i64 - target_rate as i64).unsigned_abs();
+        let fmt_penalty = format_rank(r.sample_format()).unwrap_or(u32::MAX) as u64;
+        let ch_penalty = r.channels() as u64;
+        (rate_penalty, fmt_penalty, ch_penalty)
+    });
+    if let Some(r) = best {
+        let rate = clamp_rate(r, target_rate);
+        return Ok((*r).with_sample_rate(SampleRate(rate)));
     }
 
     // The device reports no usable range, so fall back to its default config.
-    let fallback = match direction {
-        Direction::Input => device.default_input_config(),
-        Direction::Output => device.default_output_config(),
-    }
-    .map_err(|e| anyhow!("device offers no usable configuration: {e}"))?;
-
+    let fallback = device
+        .default_input_config()
+        .map_err(|e| anyhow!("device offers no usable configuration: {e}"))?;
     if format_rank(fallback.sample_format()).is_none() {
         bail!(
             "device only supports the {:?} sample format, which is not handled yet",
