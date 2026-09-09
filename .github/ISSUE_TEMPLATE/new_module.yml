@@ -1,0 +1,45 @@
+name: New measurement module
+description: Propose a measurement this tool should be able to make
+labels: ["module", "enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every measurement here is **relative** - two situations compared with the
+        same microphone in the same place. A proposal that needs a calibrated
+        microphone is out of scope, so please say what gets compared to what.
+
+  - type: input
+    id: name
+    attributes:
+      label: Module name
+      placeholder: arrival-time
+    validations:
+      required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: What question does it answer?
+      description: One sentence, from the point of view of someone tuning a car.
+      placeholder: How much delay do I need on the left door speaker?
+    validations:
+      required: true
+
+  - type: textarea
+    id: procedure
+    attributes:
+      label: Measurement procedure
+      description: What is played, what is recorded, what is computed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: sanity
+    attributes:
+      label: Sanity check
+      description: >
+        How would this module notice that it measured the room, the microphone
+        moving, or the operator - rather than the car? Every module needs one.
+    validations:
+      required: true

@@ -1,0 +1,6 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question about interpreting a measurement
+    url: https://github.com/eRobda/zvuk/discussions
+    about: >
+      Not sure what your numbers mean? Ask in Discussions and attach the JSON.
