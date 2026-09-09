@@ -287,6 +287,7 @@ rate is independent of it and does not have to match.
 | Module | Status | What it answers |
 | --- | --- | --- |
 | `left-right-balance` | **available** | How many dB louder is one side, broadband and per octave band? |
+| `crossover-check` | **available** | Where do two speaker groups hand over, is there a hole, and do their levels match? |
 | `arrival-time` | planned | How much delay does each channel need? |
 | `subwoofer-phase` | planned | Is the sub in phase — level in the crossover region at 0° vs 180°? |
 | `clipping-sweep` | planned | At what volume does the system start to clip? |
@@ -295,6 +296,92 @@ rate is independent of it and does not have to match.
 Adding one is meant to be cheap: one new file, one variant in
 `MeasurementResult`, one line in the registry. See
 [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+## Crossover and gain staging
+
+`crossover-check` answers the question you actually have when a sub and a set
+of door speakers are supposed to work together: **from where to where does each
+of them work, where do they hand over, and is one of them running hot?**
+
+There is no single "crossover" to measure. There are **two independent
+filters** — a low-pass on the sub and a high-pass on the fronts — set on
+separate knobs, and perfectly capable of disagreeing. The frequency where the
+two curves happen to meet is a *consequence* of both settings plus the drivers
+and the cabin; it is not something you can turn. So the module reports the two
+corners separately, as the two things you can actually change.
+
+You play the same track three times, changing only which speakers are allowed
+to make sound:
+
+| Pass | Setup |
+| --- | --- |
+| 1 | group A only - doors playing, sub muted |
+| 2 | group B only - sub playing, doors muted |
+| 3 | group A again, exactly as in pass 1 |
+
+The third pass is not a formality. Comparing the level of the doors with the
+level of the sub is only meaningful if **the volume knob did not move between
+passes** - and neither did the microphone, or you. Pass 3 measures the same
+thing as pass 1, so if the two disagree by more than 0.5 dB, something did move
+and the comparison is thrown out rather than reported.
+
+Results come in thirds of an octave from 20 Hz, because a subwoofer crosses
+somewhere around 80 Hz and whole octaves put their nearest centre at 125 Hz.
+
+```console
+     Hz      doors        sub        sum   summed response
+----------------------------------------------------------------------------
+     50      -43.3      -33.0      -32.6   |======================  |
+     63      -40.3      -32.8      -32.0   |======================  |
+     80      -37.2      -33.4      -31.9   |======================= |
+    100      -34.6      -35.0      -31.8   |======================= | <- crossover
+    125      -32.4      -37.7      -31.2   |======================= |
+    160      -30.7      -41.5      -30.4   |========================|
+----------------------------------------------------------------------------
+
+doors: peaks at 1600 Hz (-30.0 dBFS)
+  -6 dB from 90 Hz to 4.2 kHz
+  -10 dB from 65 Hz to 5.8 kHz
+
+sub: peaks at 63 Hz (-33.0 dBFS)
+  -6 dB from (off the measured range) to 134 Hz
+  -10 dB from (off the measured range) to 173 Hz
+
+Measured filter corners (what the system does, not what the dial says):
+  sub          low-pass      134 Hz, 13 dB/octave above it
+  doors        high-pass      90 Hz, 12 dB/octave below it
+  'sub' keeps playing 0.57 octave past where 'doors' starts: they overlap.
+```
+
+*(Bundled as `examples/example-crossover-check.json`, with synthetic numbers.
+`cargo run -- show examples/example-crossover-check.json` prints the whole
+thing, recommendation included.)*
+
+Four things to read out of it:
+
+- **Bandwidth.** Where each group is 6 dB down from its own passband. That is
+  the honest answer to "from what Hz to what Hz does the midbass work".
+- **The two filter corners, and their slopes.** The low-pass on the sub and the
+  high-pass on the fronts, measured separately, plus how steeply each falls
+  away. The report says whether they overlap, leave a gap, or line up — and
+  which knob to move in which direction. Mismatched slopes get called out too,
+  because they leave a tilt through the handover however you place the corners.
+- **The crossover.** Where the two curves actually meet, and how far each has
+  fallen by then. Both around -6 dB is the usual target.
+- **Gain staging.** The difference between the two passband levels, which is
+  what you trim at the amplifier rather than at the volume knob.
+
+These corners are **acoustic**, not dial positions. They include the driver's
+own roll-off and the cabin, so a door speaker that gives up at 90 Hz will read
+90 Hz whatever the high-pass is set to. That is the number that matters, but it
+does mean the dial may have to sit somewhere else to get it.
+
+**One honest limit:** the summed curve is a *magnitude* sum. If it already
+shows a hole, no amount of phase alignment will fix it. If it looks flat, phase
+can still ruin the real result - that is what the planned `subwoofer-phase`
+module is for.
 
 ---
 
@@ -313,11 +400,18 @@ gaps under 0.5 s, anything shorter than a second discarded. It then insists on
 finding two or three bursts of similar length, and refuses to guess if it
 finds four, or one, or bursts that disagree about how long they are.
 
-**Octave bands via FFT, not IIR filters.** Welch's method: 8192-sample Hann
-window, 50% overlap, averaged power spectra, then the power of every bin inside
-`[fc/√2, fc·√2)` is summed. The normalisation is chosen so that the power summed
-over all bins equals the mean square of the signal, which makes a band RMS
-directly comparable to the broadband RMS — and makes it testable.
+**Bands via FFT, not IIR filters.** Welch's method: Hann window, 50% overlap,
+averaged power spectra, then the power of every bin inside a band is summed.
+The normalisation is chosen so that the power summed over all bins equals the
+mean square of the signal, which makes a band RMS directly comparable to the
+broadband RMS — and makes it testable.
+
+Resolution follows the question. Whole octaves (8192-point transform) are
+enough to tell left from right. Crossover work uses thirds down to 20 Hz, and
+the 20 Hz third spans only 17.8–22.4 Hz, so it needs a 32768-point transform to
+get more than one bin into that band — and a burst of at least four seconds to
+average over. Bands that end up with fewer than three bins are flagged rather
+than quietly reported.
 
 **Channel 0** of the input device is what gets recorded. On a stereo interface,
 put the microphone in the first input.
@@ -336,6 +430,12 @@ Audio hardware cannot run in CI, so the parts around it carry the test burden:
 - Parseval normalisation holds to within 0.2 dB; a 1 kHz sine lands in the
   1 kHz band at `A/√2` with neighbours more than 40 dB down; a known 3 dB
   attenuation reads as 3.00 ± 0.01 dB in every band.
+- **Crossover, end to end**: pink noise is split by a matched pair of 12 dB per
+  octave filters at 80 Hz, and the analysis has to find the handover where the
+  filters put it, report each side's bandwidth, and see the hole that appears
+  when the two filters are pulled two octaves apart.
+- Thirds sum back to whole octaves; a sine lands in its third with neighbours
+  30 dB down; the bottom third has enough bins to mean something.
 - Segmentation finds the right number of bursts, ignores short blips, and
   rejects a recording that is all background rather than returning nonsense.
 - The generated track has the right length, puts each burst in the right
@@ -361,10 +461,11 @@ src/
     wav.rs                    16-bit WAV export
   dsp/
     mod.rs                    RMS, peak, dB
-    octave.rs                 octave analysis via FFT (Welch, Hann, 50% overlap)
+    octave.rs                 band analysis via FFT (Welch, Hann, 50% overlap)
     segment.rs                finding the bursts in a recording
   modules/
-    left_right_balance.rs     the one implemented module
+    left_right_balance.rs     left versus right
+    crossover_check.rs        two groups, their handover and gain staging
 ```
 
 ---

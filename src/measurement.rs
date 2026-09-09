@@ -7,6 +7,7 @@ use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
 use crate::audio::AudioContext;
+use crate::modules::crossover_check::CrossoverCheckResult;
 use crate::modules::left_right_balance::LeftRightBalanceResult;
 
 /// Version of the on-disk JSON format. Bump it on a breaking change.
@@ -87,10 +88,15 @@ impl TestSignal {
 
 /// A measurement result. Each module adds its own variant with its own data
 /// structure; the internal `kind` tag keeps the JSON readable and extensible.
+///
+/// Every payload is boxed. An enum is as large as its largest arm, and these
+/// structs carry whole response curves, so an unboxed one would make every
+/// result the size of the biggest module. Boxing is transparent to serde.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MeasurementResult {
-    LeftRightBalance(LeftRightBalanceResult),
+    LeftRightBalance(Box<LeftRightBalanceResult>),
+    CrossoverCheck(Box<CrossoverCheckResult>),
     // Reserved for the planned modules, e.g.:
     // ArrivalTime(ArrivalTimeResult),
     // SubwooferPhase(SubwooferPhaseResult),

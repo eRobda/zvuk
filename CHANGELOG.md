@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `crossover-check` module. The same track is played three times - group A
+  alone, group B alone, group A again - so you can read each group's working
+  bandwidth, the frequency where they hand over, whether the summed response
+  leaves a hole there, and how their levels compare. The third pass exists
+  because the level comparison is worthless if the volume knob moved.
+- The two crossover filters are reported separately, with their slopes: a
+  low-pass on the group covering the bottom and a high-pass on the group
+  covering the top are set on different knobs and can disagree, so the module
+  says whether they overlap, leave a gap or line up, and which one to move.
+- `MeasurementResult` variants are boxed. An enum is as big as its largest arm
+  and these structs carry whole response curves.
+- Third-octave analysis from 20 Hz to 16 kHz via `fractional_octave_bands` and
+  a longer transform, since whole octaves put their nearest centre at 125 Hz
+  and a sub crosses around 80 Hz.
+- `Channel::Both`, for measuring a whole system rather than one side.
+
 ## [0.2.0] - 2026-09-09
 
 The tool stopped playing audio. It writes a track, you play it through the car.

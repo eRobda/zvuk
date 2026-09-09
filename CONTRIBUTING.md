@@ -60,8 +60,10 @@ minimum supported Rust version from `rust-version` in `Cargo.toml`.
 2. Implement `signal()` if the module needs the user to play something. Return
    a `TestSignal` with the samples, a layout description and the instructions
    that get written next to the WAV.
-3. Add a result struct and give it a variant in `MeasurementResult`
-   (`src/measurement.rs`) so it serialises to JSON.
+3. Add a result struct and give it a `Box`ed variant in `MeasurementResult`
+   (`src/measurement.rs`) so it serialises to JSON. Every variant is boxed:
+   an enum is as big as its largest arm, and these structs carry whole
+   response curves.
 4. Add `pub mod your_module;` to `src/modules/mod.rs`.
 5. Add one line to `registry::all()` in `src/registry.rs`.
 
@@ -78,6 +80,17 @@ For the analysis side, `dsp::segment::find_bursts` turns a capture into the
 loud sections it contains, and `Burst::trimmed` drops the fade ramps from each
 end. `signal::burst_track` builds a stereo track of bursts separated by
 silence, which is the shape `find_bursts` is designed to recover.
+
+`dsp::octave::fractional_octave_bands` does the band analysis at whatever
+resolution you ask for. Use whole octaves when you are comparing broad levels
+and thirds when a crossover frequency matters - but remember that thirds at the
+bottom of the range need both a long transform and a long burst, or the lowest
+bands end up with almost no FFT bins in them.
+
+A module that needs the user to reconfigure the system between passes should
+say so in its `TestSignal` instructions and record each pass separately with
+`record_while`. See `crossover_check.rs`, where the third pass repeats the
+first precisely so a moved volume knob cannot pass unnoticed.
 
 ## Testing DSP code
 

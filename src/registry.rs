@@ -4,11 +4,13 @@
 //! `src/modules/mod.rs`, and one line down here.
 
 use crate::measurement::Measurement;
+use crate::modules::crossover_check::CrossoverCheck;
 use crate::modules::left_right_balance::LeftRightBalance;
 
 pub fn all() -> Vec<Box<dyn Measurement>> {
     vec![
         Box::new(LeftRightBalance),
+        Box::new(CrossoverCheck),
         // <-- register the next module here
     ]
 }
