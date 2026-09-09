@@ -1,16 +1,37 @@
-//! Octave-band analysis via FFT (Welch's method). No IIR filters involved.
+//! Fractional-octave band analysis via FFT (Welch's method). No IIR filters.
 //!
 //! The signal is cut into overlapping windows, each window goes through a real
 //! FFT, the power spectra are averaged, and finally the power of every bin
-//! falling inside an octave band is summed. The normalisation is chosen so that
-//! the sum of power over all bins equals the mean square of the signal, which
-//! makes a band RMS directly comparable to the broadband RMS.
+//! falling inside a band is summed. The normalisation is chosen so that the sum
+//! of power over all bins equals the mean square of the signal, which makes a
+//! band RMS directly comparable to the broadband RMS.
+//!
+//! Two band resolutions are used. Whole octaves are enough to tell left from
+//! right; crossover work needs thirds, because a sub crosses somewhere around
+//! 80 Hz and whole octaves put their nearest centre at 125 Hz.
 
 use anyhow::{anyhow, bail, Result};
 use realfft::RealFftPlanner;
 
 /// Standard octave-band centres used by the `left-right-balance` module.
 pub const OCTAVE_CENTERS_HZ: [f32; 7] = [125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0];
+
+/// ISO preferred third-octave centres, 20 Hz to 16 kHz.
+///
+/// The range covers a subwoofer at the bottom and a tweeter at the top, and it
+/// spans the whole-octave centres completely, so thirds always sum back to
+/// octaves.
+pub const THIRD_OCTAVE_CENTERS_HZ: [f32; 30] = [
+    20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 80.0, 100.0, 125.0, 160.0, 200.0, 250.0, 315.0, 400.0,
+    500.0, 630.0, 800.0, 1000.0, 1250.0, 1600.0, 2000.0, 2500.0, 3150.0, 4000.0, 5000.0, 6300.0,
+    8000.0, 10000.0, 12500.0, 16000.0,
+];
+
+/// FFT length for whole octaves: ~5.9 Hz per bin at 48 kHz.
+pub const OCTAVE_FFT_LEN: usize = 8192;
+/// FFT length for thirds. The 20 Hz third spans 17.8-22.4 Hz, so the bins have
+/// to be well under 1.5 Hz for the band to contain more than one of them.
+pub const THIRD_OCTAVE_FFT_LEN: usize = 32768;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Band {
@@ -25,16 +46,34 @@ pub struct Band {
     pub bins: usize,
 }
 
-/// Computes the RMS inside octave bands around the given centre frequencies.
+/// Computes the RMS inside whole-octave bands around the given centres.
 pub fn octave_bands(signal: &[f32], sample_rate: f32, centers: &[f32]) -> Result<Vec<Band>> {
-    let spectrum = power_spectrum(signal, sample_rate)?;
+    fractional_octave_bands(signal, sample_rate, centers, 1, OCTAVE_FFT_LEN)
+}
+
+/// Computes the RMS inside 1/`bands_per_octave`-octave bands.
+///
+/// Band edges are the standard `fc * 2^(-+1 / (2 * bands_per_octave))`, so
+/// `bands_per_octave = 1` gives the familiar `fc / sqrt(2)` to `fc * sqrt(2)`.
+pub fn fractional_octave_bands(
+    signal: &[f32],
+    sample_rate: f32,
+    centers: &[f32],
+    bands_per_octave: u32,
+    max_fft_len: usize,
+) -> Result<Vec<Band>> {
+    if bands_per_octave == 0 {
+        bail!("bands_per_octave must be at least 1");
+    }
+    let spectrum = power_spectrum_with_len(signal, sample_rate, max_fft_len)?;
     let bin_hz = sample_rate / spectrum.fft_len as f32;
+    let edge = 2f32.powf(1.0 / (2.0 * bands_per_octave as f32));
 
     let bands = centers
         .iter()
         .map(|&center| {
-            let low = center / std::f32::consts::SQRT_2;
-            let high = center * std::f32::consts::SQRT_2;
+            let low = center / edge;
+            let high = center * edge;
             let mut power = 0.0f64;
             let mut bins = 0usize;
             for (k, &p) in spectrum.power.iter().enumerate() {
@@ -64,7 +103,14 @@ pub struct PowerSpectrum {
 }
 
 /// Welch power spectrum estimate with a Hann window and 50% overlap.
-pub fn power_spectrum(signal: &[f32], sample_rate: f32) -> Result<PowerSpectrum> {
+///
+/// `max_fft_len` is an upper bound: a shorter signal gets a shorter transform,
+/// because a window that does not fit produces no frames at all.
+pub fn power_spectrum_with_len(
+    signal: &[f32],
+    sample_rate: f32,
+    max_fft_len: usize,
+) -> Result<PowerSpectrum> {
     if signal.len() < 256 {
         bail!(
             "signal too short for spectral analysis ({} samples)",
@@ -75,9 +121,10 @@ pub fn power_spectrum(signal: &[f32], sample_rate: f32) -> Result<PowerSpectrum>
         bail!("invalid sample rate");
     }
 
-    // 8192 bins give a ~5.9 Hz step at 48 kHz, enough to resolve the 125 Hz
-    // octave band, which spans 88-177 Hz.
-    let fft_len = 8192.min(previous_power_of_two(signal.len())).max(256);
+    let fft_len = max_fft_len
+        .max(256)
+        .min(previous_power_of_two(signal.len()))
+        .max(256);
     let hop = fft_len / 2;
 
     let window: Vec<f32> = (0..fft_len)
@@ -157,7 +204,7 @@ mod tests {
         let ms_time: f64 =
             signal.iter().map(|&s| (s as f64) * (s as f64)).sum::<f64>() / signal.len() as f64;
 
-        let spectrum = power_spectrum(&signal, FS).unwrap();
+        let spectrum = power_spectrum_with_len(&signal, FS, OCTAVE_FFT_LEN).unwrap();
         let ms_freq: f64 = spectrum.power.iter().map(|&p| p as f64).sum();
 
         let ratio_db = 10.0 * (ms_freq / ms_time).log10();
@@ -238,5 +285,97 @@ mod tests {
                 amplitude * (((v >> 40) as f32 / 8_388_608.0) - 1.0)
             })
             .collect()
+    }
+
+    /// A sine must land in its third-octave band too, where the bands are
+    /// narrow enough that the neighbours have to be much further down.
+    #[test]
+    fn a_sine_lands_in_its_third_octave_band() {
+        let amplitude = 0.5f32;
+        let target_hz = 80.0f32;
+        let signal: Vec<f32> = (0..(FS as usize * 4))
+            .map(|n| amplitude * (std::f32::consts::TAU * target_hz * n as f32 / FS).sin())
+            .collect();
+
+        let bands = fractional_octave_bands(
+            &signal,
+            FS,
+            &THIRD_OCTAVE_CENTERS_HZ,
+            3,
+            THIRD_OCTAVE_FFT_LEN,
+        )
+        .unwrap();
+
+        let hit = bands.iter().find(|b| b.center_hz == target_hz).unwrap();
+        let expected = amplitude / std::f32::consts::SQRT_2;
+        let error_db = 20.0 * (hit.rms / expected).log10();
+        assert!(
+            error_db.abs() < 0.3,
+            "80 Hz third is off by {error_db:.3} dB"
+        );
+
+        for band in bands.iter().filter(|b| b.center_hz != target_hz) {
+            let leak_db = 20.0 * (band.rms.max(1e-12) / expected).log10();
+            assert!(
+                leak_db < -30.0,
+                "third at {} Hz leaks at {leak_db:.1} dB",
+                band.center_hz
+            );
+        }
+    }
+
+    /// The bottom third is the one at risk of having no bins to sum, which is
+    /// exactly the band a subwoofer measurement lives in.
+    #[test]
+    fn the_lowest_third_octave_band_still_has_bins() {
+        let signal = white_noise(FS as usize * 5, 0.2);
+        let bands = fractional_octave_bands(
+            &signal,
+            FS,
+            &THIRD_OCTAVE_CENTERS_HZ,
+            3,
+            THIRD_OCTAVE_FFT_LEN,
+        )
+        .unwrap();
+        for band in &bands {
+            assert!(band.bins > 0, "third at {} Hz has no bins", band.center_hz);
+        }
+        assert!(
+            bands[0].bins >= 3,
+            "20 Hz third only has {} bins, too few to trust",
+            bands[0].bins
+        );
+    }
+
+    /// Thirds and whole octaves have to agree: summing the three thirds inside
+    /// an octave must reproduce that octave.
+    #[test]
+    fn thirds_sum_back_to_whole_octaves() {
+        let signal = white_noise(FS as usize * 4, 0.3);
+        let octaves = octave_bands(&signal, FS, &OCTAVE_CENTERS_HZ).unwrap();
+        let thirds = fractional_octave_bands(
+            &signal,
+            FS,
+            &THIRD_OCTAVE_CENTERS_HZ,
+            3,
+            THIRD_OCTAVE_FFT_LEN,
+        )
+        .unwrap();
+
+        for octave in &octaves {
+            let power: f32 = thirds
+                .iter()
+                .filter(|t| {
+                    t.center_hz > octave.center_hz / 1.5 && t.center_hz < octave.center_hz * 1.5
+                })
+                .map(|t| t.rms * t.rms)
+                .sum();
+            let diff_db = 20.0 * (power.sqrt() / octave.rms).log10();
+            assert!(
+                diff_db.abs() < 0.5,
+                "octave {} Hz differs from its thirds by {diff_db:.2} dB",
+                octave.center_hz
+            );
+        }
     }
 }

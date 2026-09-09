@@ -7,6 +7,7 @@ use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
 use crate::audio::AudioContext;
+use crate::modules::crossover_check::CrossoverCheckResult;
 use crate::modules::left_right_balance::LeftRightBalanceResult;
 
 /// Version of the on-disk JSON format. Bump it on a breaking change.
@@ -91,6 +92,7 @@ impl TestSignal {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MeasurementResult {
     LeftRightBalance(LeftRightBalanceResult),
+    CrossoverCheck(CrossoverCheckResult),
     // Reserved for the planned modules, e.g.:
     // ArrivalTime(ArrivalTimeResult),
     // SubwooferPhase(SubwooferPhaseResult),

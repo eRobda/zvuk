@@ -75,6 +75,7 @@ fn show(path: &Path) -> Result<()> {
         MeasurementResult::LeftRightBalance(result) => {
             modules::left_right_balance::print_result(result)
         }
+        MeasurementResult::CrossoverCheck(result) => modules::crossover_check::print_result(result),
     }
     Ok(())
 }

@@ -99,13 +99,16 @@ pub fn pink_noise_burst(sample_rate: u32, seconds: f32, level_dbfs: f32, seed: u
 pub enum Channel {
     Left,
     Right,
+    /// Both channels, for measuring a whole system rather than one side.
+    Both,
 }
 
 impl Channel {
-    fn index(self) -> usize {
+    fn gains(self) -> [f32; 2] {
         match self {
-            Channel::Left => 0,
-            Channel::Right => 1,
+            Channel::Left => [1.0, 0.0],
+            Channel::Right => [0.0, 1.0],
+            Channel::Both => [1.0, 1.0],
         }
     }
 
@@ -113,6 +116,7 @@ impl Channel {
         match self {
             Channel::Left => "left",
             Channel::Right => "right",
+            Channel::Both => "both",
         }
     }
 }
@@ -141,10 +145,9 @@ pub fn burst_track(
         if i > 0 {
             track.extend_from_slice(&silence(gap_s.max(0.0)));
         }
+        let gains = channel.gains();
         for &s in &burst {
-            let mut frame = [0.0f32; CHANNELS];
-            frame[channel.index()] = s;
-            track.extend_from_slice(&frame);
+            track.extend_from_slice(&[s * gains[0], s * gains[1]]);
         }
     }
     // Trailing silence, so a player that stops abruptly does not clip the last

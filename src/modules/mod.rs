@@ -1,6 +1,7 @@
 //! Measurement modules. Each module lives in its own file and is registered
 //! with a single line in [`crate::registry`].
 
+pub mod crossover_check;
 pub mod left_right_balance;
 
 // Planned modules (not implemented yet):
