@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "module": "left-right-balance",
+  "timestamp": "2026-09-09T18:30:12.000000000+02:00",
+  "label": "synthetic example, not a real measurement",
+  "context": {
+    "input_device": "Measurement microphone",
+    "output_device": "Head unit line out",
+    "input_sample_rate": 48000,
+    "output_sample_rate": 48000,
+    "input_channels": 2,
+    "output_channels": 2,
+    "buffer_size": null
+  },
+  "result": {
+    "kind": "left_right_balance",
+    "duration_s": 3.0,
+    "level_dbfs": -6.0,
+    "sample_rate": 48000,
+    "band_centers_hz": [125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0],
+    "left": {
+      "channel": "left",
+      "broadband_rms": 0.02,
+      "broadband_dbfs": -33.98,
+      "peak": 0.11,
+      "band_rms": [0.0090, 0.0100, 0.0110, 0.0095, 0.0080, 0.0060, 0.0040],
+      "band_dbfs": [-40.92, -40.0, -39.17, -40.45, -41.94, -44.44, -47.96]
+    },
+    "right": {
+      "channel": "right",
+      "broadband_rms": 0.0159,
+      "broadband_dbfs": -35.98,
+      "peak": 0.09,
+      "band_rms": [0.0071, 0.0079, 0.0087, 0.0075, 0.0064, 0.0048, 0.0032],
+      "band_dbfs": [-42.97, -42.05, -41.21, -42.5, -43.88, -46.38, -49.9]
+    },
+    "left_repeat": {
+      "channel": "left-recheck",
+      "broadband_rms": 0.0199,
+      "broadband_dbfs": -34.02,
+      "peak": 0.11,
+      "band_rms": [0.0090, 0.0100, 0.0110, 0.0095, 0.0080, 0.0060, 0.0040],
+      "band_dbfs": [-40.92, -40.0, -39.17, -40.45, -41.94, -44.44, -47.96]
+    },
+    "broadband_diff_db": 2.0,
+    "band_diff_db": [2.05, 2.05, 2.04, 2.05, 1.94, 1.94, 1.94],
+    "repeatability_db": 0.04,
+    "sanity_check_passed": true,
+    "recommendation": "The left side is 2.0 dB louder. Cut the left channel by 2.0 dB (or add 2.0 dB to the right).",
+    "warnings": []
+  }
+}
