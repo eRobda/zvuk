@@ -13,3 +13,8 @@ updates:
     directory: "/"
     schedule:
       interval: monthly
+    ignore:
+      # The msrv job pins this action to the Rust version from Cargo.toml on
+      # purpose. Bumping it would silently turn the job into a second stable
+      # build, so the pin moves only when rust-version does.
+      - dependency-name: dtolnay/rust-toolchain
